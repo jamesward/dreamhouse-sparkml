@@ -75,7 +75,7 @@ object DreamHouseRecommendations extends App {
   }
 
   val port = sys.env.getOrElse("PORT", "8080").toInt
-  val builder = BlazeBuilder.bindLocal(port).mountService(service)
+  val builder = BlazeBuilder.bindHttp(port, "0.0.0.0").mountService(service)
   val server = builder.run
 
   while (!Thread.currentThread.isInterrupted) {}

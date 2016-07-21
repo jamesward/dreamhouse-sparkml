@@ -10,6 +10,9 @@
     "DREAMHOUSE_WEB_APP_URL": {
       "description": "The URL to the DreamHouse Web App",
       "value": "https://dreamhouse-web-app-pio.herokuapp.com"
+    },
+    "JAVA_OPTS": {
+      "value": "-Xmx512m"
     }
   }
 }
