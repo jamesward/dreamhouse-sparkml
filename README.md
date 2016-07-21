@@ -5,5 +5,5 @@ This app uses SparkML to provide property recommendations based on users' favori
 
 Run on Heroku:
 
-1. Deploy on Heroku: [![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/heroku/node-js-sample)
+1. Deploy on Heroku: [![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
 2. Get a recommendation: `https://YOUR_APP_NAME.herokuapp.com/005360000023U4JAAU`
