@@ -1,0 +1,15 @@
+{
+  "name": "dreamhouse-sparkml",
+  "description": "DreamHouse Recommendation Engine built with SparkML",
+  "keywords": [
+    "machinelearning",
+    "sparkml"
+  ],
+  "repository": "https://github.com/jamesward/dreamhouse-sparkml",
+  "env": {
+    "DREAMHOUSE_WEB_APP_URL": {
+      "description": "The URL to the DreamHouse Web App",
+      "value": "https://dreamhouse-web-app-pio.herokuapp.com"
+    }
+  }
+}
