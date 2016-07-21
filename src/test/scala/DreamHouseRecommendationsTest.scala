@@ -13,7 +13,7 @@ class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with
   )
 
   lazy val sc: SparkContext = {
-    val conf = new SparkConf(false).setMaster("local").setAppName("test")
+    val conf = new SparkConf().setMaster("local[*]").setAppName("test")
     new SparkContext(conf)
   }
 

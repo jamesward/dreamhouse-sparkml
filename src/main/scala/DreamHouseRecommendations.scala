@@ -62,7 +62,7 @@ object DreamHouseRecommendations extends App {
     }.toMap
   }
 
-  val conf = new SparkConf(false).setMaster("local").setAppName("dreamhouse")
+  val conf = new SparkConf().setMaster("local[*]").setAppName("dreamhouse")
   val sc = new SparkContext(conf)
 
   val model = train(sc, favorites)
