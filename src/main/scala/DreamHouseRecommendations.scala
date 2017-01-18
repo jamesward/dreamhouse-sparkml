@@ -1,77 +1,64 @@
-import org.apache.commons.httpclient.HttpClient
-import org.apache.commons.httpclient.methods.GetMethod
-import org.apache.spark.mllib.recommendation.{ALS, MatrixFactorizationModel, Rating}
-import org.apache.spark.{SparkConf, SparkContext}
-import org.http4s._
+import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import io.circe.Decoder
+import io.circe.syntax._
+import org.apache.spark.ml.recommendation.ALS.Rating
+import org.apache.spark.ml.recommendation.ALS
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.SparkSession
 import org.http4s.dsl._
-import org.http4s.headers.`Content-Type`
-import org.http4s.server.blaze._
-import org.json4s.JsonAST.{JArray, JField, JObject, JString}
-import org.json4s.JsonDSL._
-import org.json4s.jackson.JsonMethods._
+import org.http4s.{HttpService, Request, Uri}
+import org.http4s.client.Client
+import org.http4s.client.blaze.PooledHttp1Client
+import org.http4s.server.blaze.BlazeBuilder
+import org.http4s.circe._
+import scalaz.concurrent.Task
 
 object DreamHouseRecommendations extends App {
 
-  def favorites: Seq[Favorite] = {
-
-    val httpClient = new HttpClient()
-
-    val baseUrl = sys.env("DREAMHOUSE_WEB_APP_URL")
-
-    val getFavorites = new GetMethod(baseUrl + "/favorite-all")
-
-    httpClient.executeMethod(getFavorites)
-
-    val json = parse(getFavorites.getResponseBodyAsStream)
-
-    for {
-      JArray(favorites) <- json
-      JObject(favorite) <- favorites
-      JField("sfid", JString(propertyId)) <- favorite
-      JField("favorite__c_user__c", JString(userId)) <- favorite
-    } yield Favorite(propertyId, userId)
-  }
-
-  private def seqToMap(s: Seq[String]): Map[String, Int] = {
-    s.distinct.zipWithIndex.toMap
-  }
-
-  def train(sc: SparkContext, favorites: Seq[Favorite]): Model = {
-
-    val userIdMap = seqToMap(favorites.map(_.userId))
-    val propertyIdMap = seqToMap(favorites.map(_.propertyId))
-
-    val ratings = favorites.map { favorite =>
-      Rating(userIdMap(favorite.userId), propertyIdMap(favorite.propertyId), 1)
+  def favorites(implicit httpClient: Client): Task[Seq[Favorite]] = {
+    val maybeUrl = sys.env.get("DREAMHOUSE_WEB_APP_URL").flatMap { url =>
+      Uri.fromString(url + "/favorite-all").toOption
     }
 
-    val rdd = sc.parallelize(ratings)
-
-    val matrixFactorizationModel = ALS.train(rdd, 10, 10)
-
-    Model(matrixFactorizationModel, userIdMap, propertyIdMap)
+    maybeUrl.map { uri =>
+      httpClient.expect(Request(uri = uri))(jsonOf[Seq[Favorite]])
+    } getOrElse {
+      Task.fail(new Exception("The DREAMHOUSE_WEB_APP_URL env var must be set"))
+    }
   }
 
-  def predict(sc: SparkContext, model: Model, userId: String, numResults: Int): Map[String, Double] = {
-    val userIdInt = model.userIdMap(userId)
+  def train(favorites: Seq[Favorite])(implicit spark: SparkSession): Model = {
+    val ratings = spark.sparkContext.makeRDD(favorites).map { favorite =>
+      Rating(favorite.userId, favorite.propertyId, 1)
+    }
 
-    val ratings = model.model.recommendProducts(userIdInt, numResults)
+    val (userFactors, itemFactors) = ALS.train(ratings = ratings, regParam = 0.01)
 
-    ratings.map { rating =>
-      model.propertyIdMap.map(_.swap).apply(rating.product) -> rating.rating
-    }.toMap
+    Model(userFactors, itemFactors)
   }
 
-  val conf = new SparkConf().setMaster("local[*]").setAppName("dreamhouse")
-  val sc = new SparkContext(conf)
+  def predict(model: Model, userId: String, numResults: Int)(implicit spark: SparkSession): Map[String, Float] = {
+    model.userFactors.lookup(userId).headOption.fold(Map.empty[String, Float]) { user =>
 
-  val model = train(sc, favorites)
+      val ratings = model.itemFactors.map { case (id, features) =>
+        val rating = blas.sdot(features.length, user, 1, features, 1)
+        (id, rating)
+      }
+
+      ratings.sortBy(_._2).take(numResults).toMap
+    }
+  }
+
+  implicit val spark = SparkSession.builder().master("local[*]").appName("DreamHouse Recommendations").getOrCreate()
+
+  implicit val httpClient = PooledHttp1Client()
+
+  val model = train(favorites.run)
 
   val service = HttpService {
     case GET -> Root / userId =>
-      val result = predict(sc, model, userId, 10)
-      val json = compact(render(result))
-      Ok(json).withContentType(Some(`Content-Type`(MediaType.`application/json`)))
+      val result = predict(model, userId, 10)
+      Ok(result.asJson)
   }
 
   val port = sys.env.getOrElse("PORT", "8080").toInt
@@ -81,9 +68,14 @@ object DreamHouseRecommendations extends App {
   while (!Thread.currentThread.isInterrupted) {}
 
   server.shutdownNow()
-  sc.stop()
+  httpClient.shutdownNow()
+  spark.stop()
 }
 
 case class Favorite(propertyId: String, userId: String)
 
-case class Model(model: MatrixFactorizationModel, userIdMap: Map[String, Int], propertyIdMap: Map[String, Int])
+object Favorite {
+  implicit val decode: Decoder[Favorite] = Decoder.forProduct2("sfid", "favorite__c_user__c")(Favorite.apply)
+}
+
+case class Model(userFactors: RDD[(String, Array[Float])], itemFactors: RDD[(String, Array[Float])])
