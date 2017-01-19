@@ -32,21 +32,26 @@ object DreamHouseRecommendations extends App {
       Rating(favorite.userId, favorite.propertyId, 1)
     }
 
-    val (userFactors, itemFactors) = ALS.train(ratings = ratings, regParam = 0.01)
+    val (userFactors, itemFactors) = ALS.train(ratings = ratings, regParam = 0.01, rank = 5)
 
-    Model(userFactors, itemFactors)
+    // this evaluates the whole matrix, right here (not in Spark) so won't scale
+    val predictions = itemFactors.collect().flatMap { case (propertyId, propertyFeatures) =>
+      userFactors.collect().map { case (userId, userFeatures) =>
+        val prediction = blas.sdot(userFeatures.length, userFeatures, 1, propertyFeatures, 1)
+        (propertyId, userId) -> prediction
+      }
+    }
+
+    Model(userFactors, itemFactors, predictions.toMap)
   }
 
-  def predict(model: Model, userId: String, numResults: Int)(implicit spark: SparkSession): Map[String, Float] = {
-    model.userFactors.lookup(userId).headOption.fold(Map.empty[String, Float]) { user =>
+  def predict(model: Model, queryUserId: String, numResults: Int)(implicit spark: SparkSession): Map[String, Float] = {
 
-      val ratings = model.itemFactors.map { case (id, features) =>
-        val rating = blas.sdot(features.length, user, 1, features, 1)
-        (id, rating)
-      }
-
-      ratings.sortBy(_._2).take(numResults).toMap
+    val propertyRatings = model.matrixFactorizationModel.collect {
+      case ((propertyId, userId), rating) if userId == queryUserId => propertyId -> rating
     }
+
+    propertyRatings.toSeq.sortBy(_._2).reverse.take(numResults).toMap
   }
 
   implicit val spark = SparkSession.builder().master("local[*]").appName("DreamHouse Recommendations").getOrCreate()
@@ -78,4 +83,4 @@ object Favorite {
   implicit val decode: Decoder[Favorite] = Decoder.forProduct2("sfid", "favorite__c_user__c")(Favorite.apply)
 }
 
-case class Model(userFactors: RDD[(String, Array[Float])], itemFactors: RDD[(String, Array[Float])])
+case class Model(userFactors: RDD[(String, Array[Float])], itemFactors: RDD[(String, Array[Float])], matrixFactorizationModel: Map[(String, String), Float])
