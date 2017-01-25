@@ -1,4 +1,5 @@
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.ml.evaluation.RegressionEvaluator
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
 
 class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with Matchers {
@@ -70,6 +71,60 @@ class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with
     result.size should be (2)
     result.keys should contain ("p3")
     result.keys should contain ("p4")
+  }
+
+  private def df(model: Model): DataFrame = {
+    import spark.implicits._
+
+    model.matrixFactorizationModel.map { case ((propertyId, userId), prediction) =>
+      val rating: Int = if (favorites.contains(Favorite(propertyId, userId))) 1 else 0
+      (propertyId, userId, rating, prediction)
+    }.toSeq.toDF("propertyId", "userId", "rating", "prediction")
+  }
+
+  "train" should "be more accurate for lower regParams" in {
+    val higherRegParam = DreamHouseRecommendations.train(favorites = favorites, regParam = 1)
+    val lowerRegParam = DreamHouseRecommendations.train(favorites = favorites, regParam = 0.1)
+
+    val evaluator = new RegressionEvaluator()
+      .setMetricName("rmse")
+      .setLabelCol("rating")
+      .setPredictionCol("prediction")
+
+    val higherRegParamRmse = evaluator.evaluate(df(higherRegParam))
+    val lowerRegParamRmse = evaluator.evaluate(df(lowerRegParam))
+
+    lowerRegParamRmse should be < higherRegParamRmse
+  }
+
+  "train" should "be more accurate for higher ranks" in {
+    val oneRank = DreamHouseRecommendations.train(favorites = favorites, rank = 1)
+    val tenRank = DreamHouseRecommendations.train(favorites = favorites, rank = 10)
+
+    val evaluator = new RegressionEvaluator()
+      .setMetricName("rmse")
+      .setLabelCol("rating")
+      .setPredictionCol("prediction")
+
+    val oneRmse = evaluator.evaluate(df(oneRank))
+    val tenRmse = evaluator.evaluate(df(tenRank))
+
+    tenRmse should be < oneRmse
+  }
+
+  "train" should "be more accurate for more iterations" in {
+    val oneIteration = DreamHouseRecommendations.train(favorites = favorites, maxIter = 1)
+    val manyIterations = DreamHouseRecommendations.train(favorites = favorites, maxIter = 5)
+
+    val evaluator = new RegressionEvaluator()
+      .setMetricName("rmse")
+      .setLabelCol("rating")
+      .setPredictionCol("prediction")
+
+    val oneIterationRmse = evaluator.evaluate(df(oneIteration))
+    val manyIterationsRmse = evaluator.evaluate(df(manyIterations))
+
+    manyIterationsRmse should be < oneIterationRmse
   }
 
   override def afterAll {

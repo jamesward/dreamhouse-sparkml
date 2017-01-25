@@ -27,12 +27,15 @@ object DreamHouseRecommendations extends App {
     }
   }
 
-  def train(favorites: Seq[Favorite])(implicit spark: SparkSession): Model = {
+  // regParam = How much to weigh extreme values
+  // rank = Number of latent features
+  // maxIter = Max iterations
+  def train(favorites: Seq[Favorite], regParam: Double = 0.01, rank: Int = 5, maxIter: Int = 10)(implicit spark: SparkSession): Model = {
     val ratings = spark.sparkContext.makeRDD(favorites).map { favorite =>
       Rating(favorite.userId, favorite.propertyId, 1)
     }
 
-    val (userFactors, itemFactors) = ALS.train(ratings = ratings, regParam = 0.01, rank = 5)
+    val (userFactors, itemFactors) = ALS.train(ratings = ratings, regParam = regParam, rank = rank, maxIter = maxIter)
 
     // this evaluates the whole matrix, right here (not in Spark) so won't scale
     val predictions = itemFactors.collect().flatMap { case (propertyId, propertyFeatures) =>
