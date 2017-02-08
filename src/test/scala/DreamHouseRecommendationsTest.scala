@@ -20,7 +20,7 @@ class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with
     -----------------------------
     p1 | ** | ## |    |    |    |
     p2 | ** | ** | ## | ## |    |
-    p3 |    | ** | ** | ** |    |
+    p3 | ## | ** | ** | ** |    |
     p4 |    | ## | ** | ** |    |
     p5 |    |    |    |    | ** |
    */
