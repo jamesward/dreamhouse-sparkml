@@ -45,7 +45,7 @@ object DreamHouseRecommendations extends App {
   }
 
   def predict(model: ALSModel, queryUser: Int, numResults: Int)(implicit spark: SparkSession): Map[Int, Float] = {
-    val itemsForUser = model.recommendForAllUsers(numResults).filter(col("user").equalTo(lit(queryUser)))
+    val itemsForUser = model.recommendForAllUsers(numResults).filter(col("user") === lit(queryUser))
 
     itemsForUser.head().getAs[Seq[Row]]("recommendations").map { r =>
       r.getAs[Int](0) -> r.getAs[Float](1)
