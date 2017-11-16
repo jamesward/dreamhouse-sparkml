@@ -1,4 +1,5 @@
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import fs2.Task
 import io.circe.Decoder
 import io.circe.syntax._
 import org.apache.spark.ml.recommendation.ALS.Rating
@@ -11,13 +12,12 @@ import org.http4s.client.Client
 import org.http4s.client.blaze.PooledHttp1Client
 import org.http4s.server.blaze.BlazeBuilder
 import org.http4s.circe._
-import scalaz.concurrent.Task
 
 object DreamHouseRecommendations extends App {
 
   def favorites(implicit httpClient: Client): Task[Seq[Favorite]] = {
     val maybeUrl = sys.env.get("DREAMHOUSE_WEB_APP_URL").flatMap { url =>
-      Uri.fromString(url + "/favorite-all").toOption
+      Uri.fromString(url + "/favorite-all").fold(_ => None, Some(_))
     }
 
     maybeUrl.map { uri =>
@@ -61,7 +61,7 @@ object DreamHouseRecommendations extends App {
 
   implicit val httpClient = PooledHttp1Client()
 
-  val model = train(favorites.run)
+  val model = train(favorites.unsafeRun())
 
   val service = HttpService {
     case GET -> Root / userId =>
