@@ -5,7 +5,7 @@ import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
 class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with Matchers {
 
   /*
-    Favorites:
+    Likes:
 
        | u1 | u2 | u3 | u4 | u5 |
     -----------------------------
@@ -25,104 +25,104 @@ class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with
     p5 |    |    |    |    | ** |
    */
 
-  val favorites: Seq[Favorite] = Seq(
-    Favorite("p1", "u1"),
-    Favorite("p2", "u1"), Favorite("p2", "u2"),
-                          Favorite("p3", "u2"), Favorite("p3", "u3"), Favorite("p3", "u4"),
-                                                Favorite("p4", "u3"), Favorite("p4", "u4"),
-                                                                                            Favorite("p5", "u5")
+  val likes: Seq[(Int, Int)] = Seq(
+    (1, 1),
+    (2, 1), (2, 2),
+            (3, 2), (3, 3), (3, 4),
+                    (4, 3), (4, 4),
+                                    (5, 5)
   )
 
-  implicit lazy val spark: SparkSession = SparkSession.builder().master("local[*]").appName("DreamHouse Recommendations").getOrCreate()
+  implicit lazy val spark: SparkSession = SparkSession.builder.master("local[*]").appName("DreamHouse Recommendations").getOrCreate()
+
+  lazy val matrix: DataFrame = {
+    import spark.implicits._
+
+    val matrix = for {
+      u <- 1 to 5
+      p <- 1 to 5
+      rating = if (likes.contains(u -> p)) 1 else 0
+      s <- Seq((u, p, rating))
+    } yield s
+
+    matrix.toDF("user", "item", "rating")
+  }
 
   "train" should "work" in {
-    val model = DreamHouseRecommendations.train(favorites)
+    val model = DreamHouseRecommendations.train(likes)
 
-    model.userFactors.collect().length should be (5)
-    model.itemFactors.collect().length should be (5)
-    model.matrixFactorizationModel.size should be (5 * 5)
+    model.userFactors.count() should be (5)
+    model.itemFactors.count() should be (5)
 
-    val p1u1 = model.matrixFactorizationModel("p1" -> "u1")
-    val p1u2 = model.matrixFactorizationModel("p1" -> "u2")
-    val p1u3 = model.matrixFactorizationModel("p1" -> "u3")
-
-    p1u1 should be > p1u2
-    p1u2 should be > p1u3
+    model.userFactors.head().getAs[Seq[Long]]("features").size should be (3)
+    model.itemFactors.head().getAs[Seq[Long]]("features").size should be (3)
   }
 
   "predict" should "work" in {
-    val model = DreamHouseRecommendations.train(favorites)
+    val model = DreamHouseRecommendations.train(likes)
 
-    val result = DreamHouseRecommendations.predict(model, "u3", 10)
+    val result = DreamHouseRecommendations.predict(model, 3, 10)
 
     result.size should be (5)
 
-    result("p1") should be < result("p2")
-    result("p2") should be < result("p3")
-    result("p2") should be < result("p4")
-    result("p4") should be > result("p5")
+    result(1) should be < result(2)
+    result(2) should be < result(3)
+    result(2) should be < result(4)
+    result(4) should be > result(5)
   }
+
 
   "predict" should "work with fewer results" in {
-    val model = DreamHouseRecommendations.train(favorites)
+    val model = DreamHouseRecommendations.train(likes)
 
-    val result = DreamHouseRecommendations.predict(model, "u3", 2)
+    val result = DreamHouseRecommendations.predict(model, 3, 2)
 
     result.size should be (2)
-    result.keys should contain ("p3")
-    result.keys should contain ("p4")
-  }
-
-  private def df(model: Model): DataFrame = {
-    import spark.implicits._
-
-    model.matrixFactorizationModel.map { case ((propertyId, userId), prediction) =>
-      val rating: Int = if (favorites.contains(Favorite(propertyId, userId))) 1 else 0
-      (propertyId, userId, rating, prediction)
-    }.toSeq.toDF("propertyId", "userId", "rating", "prediction")
+    result.keys should contain (3)
+    result.keys should contain (4)
   }
 
   "train" should "be more accurate for lower regParams" in {
-    val higherRegParam = DreamHouseRecommendations.train(favorites = favorites, regParam = 1)
-    val lowerRegParam = DreamHouseRecommendations.train(favorites = favorites, regParam = 0.1)
+    val higherRegParam = DreamHouseRecommendations.train(likes, 1).transform(matrix)
+    val lowerRegParam = DreamHouseRecommendations.train(likes, 0.1).transform(matrix)
 
     val evaluator = new RegressionEvaluator()
       .setMetricName("rmse")
       .setLabelCol("rating")
       .setPredictionCol("prediction")
 
-    val higherRegParamRmse = evaluator.evaluate(df(higherRegParam))
-    val lowerRegParamRmse = evaluator.evaluate(df(lowerRegParam))
+    val higherRegParamRmse = evaluator.evaluate(higherRegParam)
+    val lowerRegParamRmse = evaluator.evaluate(lowerRegParam)
 
     lowerRegParamRmse should be < higherRegParamRmse
   }
 
   "train" should "be more accurate for higher ranks" in {
-    val oneRank = DreamHouseRecommendations.train(favorites = favorites, rank = 1)
-    val tenRank = DreamHouseRecommendations.train(favorites = favorites, rank = 10)
+    val oneRank = DreamHouseRecommendations.train(likes, rank = 1).transform(matrix)
+    val fiveRank = DreamHouseRecommendations.train(likes, rank = 5).transform(matrix)
 
     val evaluator = new RegressionEvaluator()
       .setMetricName("rmse")
       .setLabelCol("rating")
       .setPredictionCol("prediction")
 
-    val oneRmse = evaluator.evaluate(df(oneRank))
-    val tenRmse = evaluator.evaluate(df(tenRank))
+    val oneRmse = evaluator.evaluate(oneRank)
+    val tenRmse = evaluator.evaluate(fiveRank)
 
     tenRmse should be < oneRmse
   }
 
   "train" should "be more accurate for more iterations" in {
-    val oneIteration = DreamHouseRecommendations.train(favorites = favorites, maxIter = 1)
-    val manyIterations = DreamHouseRecommendations.train(favorites = favorites, maxIter = 5)
+    val oneIteration = DreamHouseRecommendations.train(likes, maxIter = 1).transform(matrix)
+    val manyIterations = DreamHouseRecommendations.train(likes, maxIter = 5).transform(matrix)
 
     val evaluator = new RegressionEvaluator()
       .setMetricName("rmse")
       .setLabelCol("rating")
       .setPredictionCol("prediction")
 
-    val oneIterationRmse = evaluator.evaluate(df(oneIteration))
-    val manyIterationsRmse = evaluator.evaluate(df(manyIterations))
+    val oneIterationRmse = evaluator.evaluate(oneIteration)
+    val manyIterationsRmse = evaluator.evaluate(manyIterations)
 
     manyIterationsRmse should be < oneIterationRmse
   }

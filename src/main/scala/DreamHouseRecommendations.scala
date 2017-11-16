@@ -1,11 +1,10 @@
-import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import com.google.common.collect.{BiMap, HashBiMap}
 import fs2.Task
 import io.circe.Decoder
 import io.circe.syntax._
-import org.apache.spark.ml.recommendation.ALS.Rating
-import org.apache.spark.ml.recommendation.ALS
-import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.ml.recommendation.{ALS, ALSModel}
+import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.functions.{col, lit}
 import org.http4s.dsl._
 import org.http4s.{HttpService, Request, Uri}
 import org.http4s.client.Client
@@ -13,15 +12,16 @@ import org.http4s.client.blaze.PooledHttp1Client
 import org.http4s.server.blaze.BlazeBuilder
 import org.http4s.circe._
 
+
 object DreamHouseRecommendations extends App {
 
-  def favorites(implicit httpClient: Client): Task[Seq[Favorite]] = {
+  def likesTask(implicit httpClient: Client): Task[Likes] = {
     val maybeUrl = sys.env.get("DREAMHOUSE_WEB_APP_URL").flatMap { url =>
       Uri.fromString(url + "/favorite-all").fold(_ => None, Some(_))
     }
 
     maybeUrl.map { uri =>
-      httpClient.expect(Request(uri = uri))(jsonOf[Seq[Favorite]])
+      httpClient.expect(Request(uri = uri))(jsonOf[Seq[Like]]).map(Likes(_))
     } getOrElse {
       Task.fail(new Exception("The DREAMHOUSE_WEB_APP_URL env var must be set"))
     }
@@ -30,42 +30,38 @@ object DreamHouseRecommendations extends App {
   // regParam = How much to weigh extreme values
   // rank = Number of latent features
   // maxIter = Max iterations
-  def train(favorites: Seq[Favorite], regParam: Double = 0.01, rank: Int = 5, maxIter: Int = 10)(implicit spark: SparkSession): Model = {
-    val ratings = spark.sparkContext.makeRDD(favorites).map { favorite =>
-      Rating(favorite.userId, favorite.propertyId, 1)
-    }
+  def train(likes: Seq[(Int, Int)], regParam: Double = 0.01, rank: Int = 3, maxIter: Int = 10)(implicit spark: SparkSession): ALSModel = {
+    import spark.implicits._
 
-    val (userFactors, itemFactors) = ALS.train(ratings = ratings, regParam = regParam, rank = rank, maxIter = maxIter)
+    val ratings = likes.toDF("user", "item").withColumn("rating", lit(1))
 
-    // this evaluates the whole matrix, right here (not in Spark) so won't scale
-    val predictions = itemFactors.collect().flatMap { case (propertyId, propertyFeatures) =>
-      userFactors.collect().map { case (userId, userFeatures) =>
-        val prediction = blas.sdot(userFeatures.length, userFeatures, 1, propertyFeatures, 1)
-        (propertyId, userId) -> prediction
-      }
-    }
+    val als = new ALS()
+      .setRegParam(regParam)
+      .setRank(rank)
+      .setMaxIter(maxIter)
+      .setNonnegative(true)
 
-    Model(userFactors, itemFactors, predictions.toMap)
+    als.fit(ratings)
   }
 
-  def predict(model: Model, queryUserId: String, numResults: Int)(implicit spark: SparkSession): Map[String, Float] = {
+  def predict(model: ALSModel, queryUser: Int, numResults: Int)(implicit spark: SparkSession): Map[Int, Float] = {
+    val itemsForUser = model.recommendForAllUsers(numResults).filter(col("user").equalTo(lit(queryUser)))
 
-    val propertyRatings = model.matrixFactorizationModel.collect {
-      case ((propertyId, userId), rating) if userId == queryUserId => propertyId -> rating
-    }
-
-    propertyRatings.toSeq.sortBy(_._2).reverse.take(numResults).toMap
+    itemsForUser.head().getAs[Seq[Row]]("recommendations").map { r =>
+      r.getAs[Int](0) -> r.getAs[Float](1)
+    }.toMap
   }
 
   implicit val spark = SparkSession.builder().master("local[*]").appName("DreamHouse Recommendations").getOrCreate()
 
   implicit val httpClient = PooledHttp1Client()
 
-  val model = train(favorites.unsafeRun())
+  val likes = likesTask.unsafeRun()
+  val model = train(likes.likes)
 
   val service = HttpService {
     case GET -> Root / userId =>
-      val result = predict(model, userId, 10)
+      val result = predict(model, likes.userBiMap.get(userId), 10)
       Ok(result.asJson)
   }
 
@@ -80,10 +76,24 @@ object DreamHouseRecommendations extends App {
   spark.stop()
 }
 
-case class Favorite(propertyId: String, userId: String)
+case class Likes(userBiMap: BiMap[String, Int], propertyBiMap: BiMap[String, Int], likes: Seq[(Int, Int)])
 
-object Favorite {
-  implicit val decode: Decoder[Favorite] = Decoder.forProduct2("sfid", "favorite__c_user__c")(Favorite.apply)
+object Likes {
+  def apply(likes: Seq[Like]): Likes = {
+    import scala.collection.JavaConversions._
+    val userBiMap: BiMap[String, Int] = HashBiMap.create(likes.map(_.userId).zipWithIndex.toMap)
+    val propertyBiMap: BiMap[String, Int] = HashBiMap.create(likes.map(_.propertyId).zipWithIndex.toMap)
+
+    val likesIntInt = likes.map { like =>
+      (userBiMap.get(like.userId), propertyBiMap.get(like.propertyId))
+    }
+
+    Likes(userBiMap, propertyBiMap, likesIntInt)
+  }
 }
 
-case class Model(userFactors: RDD[(String, Array[Float])], itemFactors: RDD[(String, Array[Float])], matrixFactorizationModel: Map[(String, String), Float])
+case class Like(propertyId: String, userId: String)
+
+object Like {
+  implicit val decode: Decoder[Like] = Decoder.forProduct2("sfid", "favorite__c_user__c")(Like.apply)
+}
