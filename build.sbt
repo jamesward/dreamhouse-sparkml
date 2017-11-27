@@ -12,6 +12,8 @@ libraryDependencies ++= Seq(
   "org.scalatest"    %% "scalatest"            % "3.0.4" % "test"
 )
 
-fork in run := true
+fork := true
+
+javaOptions += "-Xmx2G"
 
 enablePlugins(JavaAppPackaging)

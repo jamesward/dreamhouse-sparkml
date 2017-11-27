@@ -71,7 +71,6 @@ class DreamHouseRecommendationsTest extends FlatSpec with BeforeAndAfterAll with
     result(4) should be > result(5)
   }
 
-
   "predict" should "work with fewer results" in {
     val model = DreamHouseRecommendations.train(likes)
 
